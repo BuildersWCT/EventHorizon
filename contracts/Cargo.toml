@@ -5,6 +5,7 @@ members = [
     "token_vesting",
     "staking",
     "escrow",
+    "amm_pool",
 ]
 
 [profile.release]
