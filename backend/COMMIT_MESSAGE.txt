@@ -1,0 +1,55 @@
+perf: integrate bullmq for background action processing
+
+Add BullMQ-based queue system for reliable background processing of trigger
+actions (Discord, Email, Telegram, Webhooks). The system gracefully falls
+back to direct execution when Redis is unavailable.
+
+Features:
+- Guaranteed delivery with 3 automatic retries and exponential backoff
+- Concurrent action execution (5 workers by default)
+- Rate limiting (10 jobs/second) to prevent API throttling
+- Job monitoring via /api/queue/* endpoints
+- Graceful fallback to direct execution without Redis
+- Comprehensive documentation and migration guides
+
+Changes:
+- Add BullMQ worker for background job processing
+- Decouple event poller from HTTP calls for better reliability
+- Add queue monitoring API endpoints (stats, jobs, retry, clean)
+- Implement automatic retries with exponential backoff
+- Add concurrency control and rate limiting
+- Include graceful fallback when Redis is unavailable
+
+Files Added:
+- src/worker/processor.js - BullMQ worker implementation
+- src/worker/queue.js - Queue management and job creation
+- src/controllers/queue.controller.js - Queue monitoring API
+- src/routes/queue.routes.js - Queue API routes
+- __tests__/queue.test.js - Queue integration tests
+- QUEUE_SETUP.md - Comprehensive setup guide
+- MIGRATION_GUIDE.md - Migration instructions
+- QUICKSTART_QUEUE.md - Quick start guide
+- REDIS_OPTIONAL.md - Fallback behavior documentation
+- CHANGELOG_QUEUE.md - Complete changelog
+- examples/queue-usage.js - Usage examples
+
+Files Modified:
+- package.json - Add bullmq and ioredis dependencies
+- src/worker/poller.js - Use enqueueAction() with fallback
+- src/server.js - Initialize worker with graceful error handling
+- .env.example - Add Redis and worker configuration
+- README.md - Document Redis as optional prerequisite
+
+Breaking Changes: None
+- Redis is optional - app works with or without it
+- All existing API endpoints remain unchanged
+- Queue system is internal enhancement
+
+Migration:
+1. Run: npm install
+2. Optional: Install Redis and configure .env
+3. Restart server
+
+For detailed setup: See backend/QUEUE_SETUP.md
+For migration help: See backend/MIGRATION_GUIDE.md
+For quick start: See backend/QUICKSTART_QUEUE.md

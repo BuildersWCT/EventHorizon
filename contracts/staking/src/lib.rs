@@ -1,0 +1,220 @@
+#![no_std]
+use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, Symbol, log};
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct StakeInfo {
+    pub amount: i128,
+    pub start_ts: u64,
+    pub last_claim_ts: u64,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub enum DataKey {
+    Admin,
+    StakingToken,
+    RewardToken,
+    RewardRate,     // Rewards per token per second (scaled)
+    LockUpPeriod,   // Seconds tokens must be locked to avoid penalty
+    PenaltyRate,    // Percentage of stake penalized for early exit (0-100)
+    TotalStaked,
+    Stake(Address),
+}
+
+const SCALAR: i128 = 1_000_000; // Used to scale reward rates for more precision
+
+#[contract]
+pub struct StakingContract;
+
+#[contractimpl]
+impl StakingContract {
+    /// Initializes the staking contract parameters.
+    pub fn initialize(
+        env: Env,
+        admin: Address,
+        staking_token: Address,
+        reward_token: Address,
+        reward_rate: i128,
+        lock_up_period: u64,
+        penalty_rate: i128,
+    ) {
+        if env.storage().instance().has(&DataKey::Admin) {
+            panic!("Already initialized");
+        }
+        if penalty_rate < 0 || penalty_rate > 100 {
+            panic!("Penalty rate must be between 0 and 100");
+        }
+
+        env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage().instance().set(&DataKey::StakingToken, &staking_token);
+        env.storage().instance().set(&DataKey::RewardToken, &reward_token);
+        env.storage().instance().set(&DataKey::RewardRate, &reward_rate);
+        env.storage().instance().set(&DataKey::LockUpPeriod, &lock_up_period);
+        env.storage().instance().set(&DataKey::PenaltyRate, &penalty_rate);
+        env.storage().instance().set(&DataKey::TotalStaked, &0i128);
+    }
+
+    /// Deposits tokens into the staking pool.
+    pub fn stake(env: Env, user: Address, amount: i128) {
+        user.require_auth();
+        if amount <= 0 { panic!("Must stake more than zero"); }
+
+        let staking_token_addr: Address = env.storage().instance().get(&DataKey::StakingToken).expect("Not init");
+        let token_client = token::Client::new(&env, &staking_token_addr);
+
+        // Calculate pending rewards before updating stake
+        let now = env.ledger().timestamp();
+        let mut stake_info = env.storage().persistent()
+            .get::<DataKey, StakeInfo>(&DataKey::Stake(user.clone()))
+            .unwrap_or(StakeInfo { amount: 0, start_ts: now, last_claim_ts: now });
+
+        if stake_info.amount > 0 {
+            // Internal claim logic: automatically claim rewards before restaking
+            // This simplifies the math and ensures rewards are calculated correctly
+            let rewards = Self::calculate_rewards(&env, &stake_info, now);
+            if rewards > 0 {
+                Self::distribute_rewards(&env, &user, rewards);
+            }
+        }
+
+        // Transfer tokens from user to contract
+        token_client.transfer(&user, &env.current_contract_address(), &amount);
+
+        // Update stake info
+        stake_info.amount += amount;
+        stake_info.start_ts = now; // Reset start time for lock-up period on fresh stake?
+        // Actually, resetting start time for the entire balance is common for simplicity,
+        // or we could track multiple stakes. We'll stick to a simple single-position model.
+        stake_info.last_claim_ts = now;
+
+        env.storage().persistent().set(&DataKey::Stake(user.clone()), &stake_info);
+        
+        let total: i128 = env.storage().instance().get(&DataKey::TotalStaked).unwrap_or(0);
+        env.storage().instance().set(&DataKey::TotalStaked, &(total + amount));
+
+        env.events().publish(
+            (Symbol::new(&env, "stake"), user),
+            amount
+        );
+    }
+
+    /// Withdraws all staked tokens, applying penalties if early.
+    pub fn unstake(env: Env, user: Address) -> i128 {
+        user.require_auth();
+        
+        let mut stake_info: StakeInfo = env.storage().persistent()
+            .get(&DataKey::Stake(user.clone()))
+            .expect("No stake found");
+
+        if stake_info.amount <= 0 { panic!("Zero balance"); }
+
+        let now = env.ledger().timestamp();
+        
+        // 1. Claim final rewards
+        let rewards = Self::calculate_rewards(&env, &stake_info, now);
+        if rewards > 0 {
+            Self::distribute_rewards(&env, &user, rewards);
+        }
+
+        // 2. Check for early withdrawal penalty
+        let lock_period: u64 = env.storage().instance().get(&DataKey::LockUpPeriod).unwrap_or(0);
+        let mut final_amount = stake_info.amount;
+        
+        if now < stake_info.start_ts + lock_period {
+            let penalty_rate: i128 = env.storage().instance().get(&DataKey::PenaltyRate).unwrap_or(0);
+            let penalty = (stake_info.amount * penalty_rate) / 100;
+            final_amount -= penalty;
+            
+            log!(&env, "Penalty applied for early unstaking", penalty);
+            env.events().publish((Symbol::new(&env, "penalty"), user.clone()), penalty);
+        }
+
+        // 3. Transfer remaining principal back
+        let staking_token_addr: Address = env.storage().instance().get(&DataKey::StakingToken).expect("Not init");
+        let token_client = token::Client::new(&env, &staking_token_addr);
+        token_client.transfer(&env.current_contract_address(), &user, &final_amount);
+
+        // 4. Update state
+        let total: i128 = env.storage().instance().get(&DataKey::TotalStaked).unwrap_or(0);
+        env.storage().instance().set(&DataKey::TotalStaked, &(total - stake_info.amount));
+        env.storage().persistent().remove(&DataKey::Stake(user.clone()));
+
+        env.events().publish(
+            (Symbol::new(&env, "unstake"), user),
+            final_amount
+        );
+
+        final_amount
+    }
+
+    /// Claims accumulated rewards without unstaking.
+    pub fn claim_rewards(env: Env, user: Address) -> i128 {
+        user.require_auth();
+
+        let mut stake_info: StakeInfo = env.storage().persistent()
+            .get(&DataKey::Stake(user.clone()))
+            .expect("No stake found");
+
+        let now = env.ledger().timestamp();
+        let rewards = Self::calculate_rewards(&env, &stake_info, now);
+        
+        if rewards > 0 {
+            Self::distribute_rewards(&env, &user, rewards);
+            stake_info.last_claim_ts = now;
+            env.storage().persistent().set(&DataKey::Stake(user), &stake_info);
+        }
+
+        rewards
+    }
+
+    /// Returns the current pending rewards for a user.
+    pub fn get_pending_rewards(env: Env, user: Address) -> i128 {
+        let stake_info: StakeInfo = env.storage().persistent()
+            .get(&DataKey::Stake(user))
+            .unwrap_or(StakeInfo { amount: 0, start_ts: 0, last_claim_ts: 0 });
+        
+        Self::calculate_rewards(&env, &stake_info, env.ledger().timestamp())
+    }
+
+    /// Returns stake information for a user.
+    pub fn get_stake_info(env: Env, user: Address) -> StakeInfo {
+        env.storage().persistent()
+            .get(&DataKey::Stake(user))
+            .expect("No stake found")
+    }
+
+    // --- Helper Functions ---
+
+    fn calculate_rewards(env: &Env, stake: &StakeInfo, now: u64) -> i128 {
+        if stake.amount <= 0 || now <= stake.last_claim_ts {
+            return 0;
+        }
+
+        let rate: i128 = env.storage().instance().get(&DataKey::RewardRate).unwrap_or(0);
+        let elapsed = now - stake.last_claim_ts;
+
+        // Reward = Amount * Rate * Time / SCALAR
+        stake.amount
+            .checked_mul(rate)
+            .expect("Overflow")
+            .checked_mul(elapsed as i128)
+            .expect("Overflow")
+            .checked_div(SCALAR)
+            .expect("Division by zero")
+    }
+
+    fn distribute_rewards(env: &Env, to: &Address, amount: i128) {
+        let reward_token_addr: Address = env.storage().instance().get(&DataKey::RewardToken).expect("Not init");
+        let token_client = token::Client::new(env, &reward_token_addr);
+        
+        token_client.transfer(&env.current_contract_address(), to, &amount);
+
+        env.events().publish(
+            (Symbol::new(env, "reward_payout"), to.clone()),
+            amount
+        );
+    }
+}
+
+mod test;
