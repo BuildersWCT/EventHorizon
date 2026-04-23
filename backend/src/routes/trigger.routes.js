@@ -88,4 +88,47 @@ router.get('/', triggerController.getTriggers);
  */
 router.delete('/:id', triggerController.deleteTrigger);
 
+/**
+ * @openapi
+ * /api/triggers/{id}:
+ *   put:
+ *     summary: Update a trigger
+ *     description: Update an existing trigger configuration including batching settings.
+ *     tags:
+ *       - Triggers
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         description: Trigger identifier.
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             $ref: '#/components/schemas/TriggerInput'
+ *     responses:
+ *       200:
+ *         description: Trigger updated successfully.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Trigger'
+ *       404:
+ *         description: Trigger not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ErrorResponse'
+ *       400:
+ *         description: Invalid trigger payload.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ErrorResponse'
+ */
+router.put('/:id', triggerController.updateTrigger);
+
 module.exports = router;

@@ -69,6 +69,15 @@ mongoose
         process.on('SIGTERM', async () => {
             logger.info('SIGTERM received, shutting down gracefully');
 
+            // Flush any pending batches before shutdown
+            try {
+                const batchService = require('./services/batch.service');
+                batchService.flushAll();
+                logger.info('Pending batches flushed');
+            } catch (error) {
+                logger.error('Error flushing batches during shutdown', { error: error.message });
+            }
+
             if (worker) {
                 await worker.close();
             }

@@ -50,6 +50,28 @@ const triggerSchema = new mongoose.Schema({
             default: 5000
         }
     },
+    batchingConfig: {
+        enabled: {
+            type: Boolean,
+            default: false
+        },
+        windowMs: {
+            type: Number,
+            default: 10000, // 10 seconds
+            min: 1000,
+            max: 300000 // 5 minutes
+        },
+        maxBatchSize: {
+            type: Number,
+            default: 50,
+            min: 1,
+            max: 1000
+        },
+        continueOnError: {
+            type: Boolean,
+            default: true // Continue processing other events in batch if one fails
+        }
+    },
     metadata: {
         type: Map,
         of: String,

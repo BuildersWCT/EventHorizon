@@ -54,6 +54,62 @@ EventHorizon uses BullMQ with Redis for reliable background processing of trigge
 - See [backend/QUEUE_SETUP.md](backend/QUEUE_SETUP.md) for setup instructions
 - See [backend/REDIS_OPTIONAL.md](backend/REDIS_OPTIONAL.md) for fallback behavior
 
+## 📦 High-Frequency Event Batching
+
+EventHorizon supports intelligent batching for high-frequency events to improve efficiency and reduce API call overhead:
+
+### Features
+- **Window-based batching**: Collect events for a configurable time window (default: 10 seconds)
+- **Size-based batching**: Flush batches when reaching a maximum size (default: 50 events)
+- **Per-trigger configuration**: Enable/disable batching and customize settings per trigger
+- **Error resilience**: Continue processing other events in a batch if one fails (configurable)
+- **Array payload format**: Batches are sent as arrays of event payloads
+
+### Configuration
+When creating or updating a trigger, include the `batchingConfig` object:
+
+```json
+{
+  "contractId": "CA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ",
+  "eventName": "transfer",
+  "actionType": "webhook",
+  "actionUrl": "https://api.example.com/webhook",
+  "batchingConfig": {
+    "enabled": true,
+    "windowMs": 10000,        // 10 seconds
+    "maxBatchSize": 50,       // Max 50 events per batch
+    "continueOnError": true   // Continue if one event fails
+  }
+}
+```
+
+### Batch Payload Format
+For webhooks, batches are sent as:
+
+```json
+{
+  "contractId": "CA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ",
+  "eventName": "transfer",
+  "batchPayloads": [
+    { "event": "payload1", "ledger": 12345 },
+    { "event": "payload2", "ledger": 12346 }
+  ],
+  "batchSize": 2
+}
+```
+
+For other action types (Discord, Telegram, Email), each event in the batch is processed individually but grouped for efficiency.
+
+### API Endpoints
+- `GET /api/queue/batches/stats` - Get current batch statistics
+- `POST /api/queue/batches/flush` - Manually flush all pending batches
+
+### Monitoring
+Use the batch stats endpoint to monitor:
+- Number of active batches
+- Pending flush timers
+- Events per batch and batch age
+
 ## 🧪 Testing with the Boilerplate Contract
 1. Deploy the contract in `/contracts`.
 2. Copy the Contract ID.
