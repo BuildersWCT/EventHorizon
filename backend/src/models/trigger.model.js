@@ -29,6 +29,12 @@ const filterSchema = new mongoose.Schema({
 }, { _id: false });
 
 const triggerSchema = new mongoose.Schema({
+    network: {
+        type: String,
+        enum: ['mainnet', 'testnet', 'futurenet'],
+        default: 'testnet',
+        index: true
+    },
     contractId: {
         type: String,
         required: true,
@@ -114,6 +120,9 @@ const triggerSchema = new mongoose.Schema({
     toJSON: { virtuals: true },
     toObject: { virtuals: true }
 });
+
+// Optimize queries for fetching active triggers per network efficiently
+triggerSchema.index({ network: 1, isActive: 1 });
 
 // Aggregate health score (0-100)
 triggerSchema.virtual('healthScore').get(function() {
