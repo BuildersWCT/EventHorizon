@@ -139,4 +139,62 @@ router.put('/:id',
     triggerController.updateTrigger
 );
 
+/**
+ * @openapi
+ * /api/triggers/{id}/versions:
+ *   get:
+ *     summary: List trigger versions
+ *     description: Return all versions of a trigger.
+ *     tags:
+ *       - Triggers
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         description: Trigger identifier.
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: List of trigger versions.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 $ref: '#/components/schemas/TriggerVersion'
+ */
+router.get('/:id/versions', triggerController.getTriggerVersions);
+
+/**
+ * @openapi
+ * /api/triggers/{id}/versions/{version}/restore:
+ *   post:
+ *     summary: Restore a trigger version
+ *     description: Restore a trigger to a specific version.
+ *     tags:
+ *       - Triggers
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         description: Trigger identifier.
+ *         schema:
+ *           type: string
+ *       - in: path
+ *         name: version
+ *         required: true
+ *         description: Version number.
+ *         schema:
+ *           type: integer
+ *     responses:
+ *       200:
+ *         description: Trigger restored successfully.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Trigger'
+ */
+router.post('/:id/versions/:version/restore', triggerController.restoreTriggerVersion);
+
 module.exports = router;
