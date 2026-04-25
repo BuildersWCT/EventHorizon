@@ -18,6 +18,9 @@ members = [
     "prediction_resolution_engine",
     "emitter_registry",
     "cross_chain_bridge",
+    "flash_loan",
+    "royalty_registry",
+
 ]
 
 [profile.release]
