@@ -141,10 +141,10 @@ router.put('/:id',
 
 /**
  * @openapi
- * /api/triggers/{id}/regenerate-secret:
- *   post:
- *     summary: Regenerate webhook secret
- *     description: Generate a new webhook secret for HMAC signature verification. Only available for webhook triggers.
+ * /api/triggers/{id}/versions:
+ *   get:
+ *     summary: List trigger versions
+ *     description: Return all versions of a trigger.
  *     tags:
  *       - Triggers
  *     parameters:
@@ -156,43 +156,45 @@ router.put('/:id',
  *           type: string
  *     responses:
  *       200:
- *         description: Webhook secret regenerated successfully.
+ *         description: List of trigger versions.
  *         content:
  *           application/json:
  *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                   example: true
- *                 message:
- *                   type: string
- *                   example: "Webhook secret regenerated successfully"
- *                 data:
- *                   type: object
- *                   properties:
- *                     triggerId:
- *                       type: string
- *                       example: "507f1f77bcf86cd799439011"
- *                     webhookSecret:
- *                       type: string
- *                       example: "a1b2c3d4e5f678901234567890123456789012345678901234567890123456789012"
- *       404:
- *         description: Trigger not found.
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
- *       400:
- *         description: Not a webhook trigger.
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
+ *               type: array
+ *               items:
+ *                 $ref: '#/components/schemas/TriggerVersion'
  */
-router.post('/:id/regenerate-secret',
-    auditMiddleware.auditUpdate(),
-    triggerController.regenerateWebhookSecret
-);
+router.get('/:id/versions', triggerController.getTriggerVersions);
+
+/**
+ * @openapi
+ * /api/triggers/{id}/versions/{version}/restore:
+ *   post:
+ *     summary: Restore a trigger version
+ *     description: Restore a trigger to a specific version.
+ *     tags:
+ *       - Triggers
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         description: Trigger identifier.
+ *         schema:
+ *           type: string
+ *       - in: path
+ *         name: version
+ *         required: true
+ *         description: Version number.
+ *         schema:
+ *           type: integer
+ *     responses:
+ *       200:
+ *         description: Trigger restored successfully.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Trigger'
+ */
+router.post('/:id/versions/:version/restore', triggerController.restoreTriggerVersion);
 
 module.exports = router;

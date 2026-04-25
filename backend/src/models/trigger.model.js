@@ -118,6 +118,10 @@ const triggerSchema = new mongoose.Schema({
     filters: {
         type: [filterSchema],
         default: [],
+    },
+    sequence: {
+        type: mongoose.Schema.Types.Mixed, // { steps: [{ eventName, filters, timeWindowMs }], maxTimeMs }
+        default: null
     }
 }, {
     timestamps: true,

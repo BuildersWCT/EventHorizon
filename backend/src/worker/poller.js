@@ -1,12 +1,9 @@
 const { rpc, xdr } = require('@stellar/stellar-sdk');
 const Trigger = require('../models/trigger.model');
 const batchService = require('../services/batch.service');
-const vaultService = require('../services/vault.service');
+const correlationService = require('../services/correlation.service');
 const logger = require('../config/logger');
 const { passesFilters } = require('../utils/filterEvaluator');
-const v8 = require('v8');
-const fs = require('fs');
-const path = require('path');
 
 const RPC_URL = process.env.SOROBAN_RPC_URL || 'https://soroban-testnet.stellar.org';
 const server = new rpc.Server(RPC_URL, {
@@ -24,17 +21,6 @@ const INTER_PAGE_DELAY_MS = parseInt(process.env.INTER_PAGE_DELAY_MS || '200', 1
 
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-/**
- * Take a heap snapshot for memory profiling
- */
-function takeHeapSnapshot(label) {
-    const snapshot = v8.writeHeapSnapshot();
-    const filename = `heap-${label}-${Date.now()}.heapsnapshot`;
-    const filepath = path.join(process.cwd(), filename);
-    fs.renameSync(snapshot, filepath);
-    logger.info(`Heap snapshot taken: ${filepath}`);
 }
 
 /**
@@ -129,7 +115,7 @@ try {
                 return await slackService.execute(trigger, eventPayload);
 
             case 'telegram': {
-                const botToken = await vaultService.getApiKey('telegram');
+                const botToken = process.env.TELEGRAM_BOT_TOKEN;
                 const chatId = actionUrl; // actionUrl stores the chat ID for telegram triggers
                 if (!botToken || !chatId) {
                     throw new Error('Missing TELEGRAM_BOT_TOKEN or actionUrl (chatId) for telegram trigger');
@@ -196,7 +182,6 @@ async function processEvent(trigger, eventPayload) {
 
 async function pollEvents() {
     try {
-        takeHeapSnapshot('poll-start');
         const triggers = await Trigger.find({ isActive: true });
 
         if (triggers.length === 0) {
@@ -219,85 +204,82 @@ async function pollEvents() {
             return;
         }
 
+        // Group triggers by contract
+        const triggersByContract = {};
         for (const trigger of triggers) {
-            logger.debug(`Polling for: ${trigger.eventName} on ${trigger.contractId}`);
+            if (!triggersByContract[trigger.contractId]) {
+                triggersByContract[trigger.contractId] = [];
+            }
+            triggersByContract[trigger.contractId].push(trigger);
+        }
+
+        for (const contractId in triggersByContract) {
+            const contractTriggers = triggersByContract[contractId];
+            logger.debug(`Polling for contract: ${contractId}, triggers: ${contractTriggers.length}`);
+
             try {
-                // Determine our ledger bounds for this trigger
-                let startLedger = trigger.lastPolledLedger;
-                if (!startLedger || startLedger === 0) {
-                    // Start close to the current network tip if it's brand new
+                // Determine ledger bounds based on the furthest behind trigger
+                let startLedger = Math.max(...contractTriggers.map(t => t.lastPolledLedger || 0));
+                if (startLedger === 0) {
                     startLedger = Math.max(1, latestLedgerSequence - 100);
                 } else {
-                    // If we've already polled up to or past the network tip, skip
                     if (startLedger >= latestLedgerSequence) continue;
-                    // Start from the *next* ledger
                     startLedger += 1;
                 }
 
-                // Apply max window size
                 const endLedger = Math.min(startLedger + MAX_LEDGERS_PER_POLL, latestLedgerSequence);
-
-                // Convert event name to XDR format for topic filtering
-                const eventTopicXdr = xdr.ScVal.scvSymbol(trigger.eventName).toXDR("base64");
 
                 let cursor = undefined;
                 let foundEvents = 0;
                 let failedActions = 0;
 
-                // 2. Fetch events with pagination support
+                // Poll all events from the contract
                 while (true) {
                     const response = await withRetry(() => server.getEvents({
                         startLedger,
                         filters: [
                             {
                                 type: "contract",
-                                contractIds: [trigger.contractId],
-                                topics: [[eventTopicXdr]]
+                                contractIds: [contractId]
                             }
                         ],
                         pagination: { limit: 100, cursor }
                     }));
 
-                    // Parse the events with zero-copy optimization
                     if (response && response.events && response.events.length > 0) {
-                        const eventBuffer = Buffer.allocUnsafe(response.events.length * 1024); // Pre-allocate buffer
-                        let bufferOffset = 0;
+                        for (const event of response.events) {
+                            if (event.ledger > endLedger) break;
 
-                        for (let i = 0; i < response.events.length; i++) {
-                            const event = response.events[i];
-                            // Ensure the event falls within our intended window
-                            if (event.ledger <= endLedger) {
-                                if (!passesFilters(event, trigger.filters)) {
-                                    logger.debug('Event filtered out by trigger filters', {
-                                        triggerId: trigger._id,
-                                        eventId: event.id,
-                                        eventLedger: event.ledger,
-                                    });
-                                    continue;
-                                }
-                                foundEvents++;
+                            for (const trigger of contractTriggers) {
                                 try {
-                                    // Zero-copy: pass event reference directly
-                                    await processEvent(trigger, event);
-
-                                    // Track execution stats (events added to batch)
-                                    trigger.totalExecutions = (trigger.totalExecutions || 0) + 1;
-                                    trigger.lastSuccessAt = new Date();
+                                    if (trigger.sequence) {
+                                        const result = await correlationService.checkSequence(trigger, event);
+                                        if (result.shouldFire) {
+                                            await processEvent(trigger, result.eventPayload);
+                                            trigger.totalExecutions = (trigger.totalExecutions || 0) + 1;
+                                            trigger.lastSuccessAt = new Date();
+                                            foundEvents++;
+                                        }
+                                    } else {
+                                        if (event.eventName === trigger.eventName && passesFilters(event, trigger.filters)) {
+                                            await processEvent(trigger, event);
+                                            trigger.totalExecutions = (trigger.totalExecutions || 0) + 1;
+                                            trigger.lastSuccessAt = new Date();
+                                            foundEvents++;
+                                        }
+                                    }
                                 } catch (error) {
-                                    // Track execution stats (immediate failure)
                                     trigger.totalExecutions = (trigger.totalExecutions || 0) + 1;
                                     trigger.failedExecutions = (trigger.failedExecutions || 0) + 1;
                                     failedActions++;
                                     logger.error(`Event processing failed for trigger ${trigger._id}`, {
                                         error: error.message,
-                                        actionType: trigger.actionType,
                                         eventLedger: event.ledger,
                                     });
                                 }
                             }
                         }
 
-                        // Determine if there are more pages
                         const lastEvent = response.events[response.events.length - 1];
                         if (response.events.length >= 100 && lastEvent && lastEvent.id) {
                             cursor = lastEvent.id;
@@ -308,35 +290,33 @@ async function pollEvents() {
                         break;
                     }
 
-                    // Sleep between pages to avoid tripping rate limits
                     await sleep(INTER_PAGE_DELAY_MS);
                 }
 
-                // 3. Update trigger state
-                trigger.lastPolledLedger = endLedger;
-                await trigger.save();
+                // Update lastPolledLedger for all triggers in the contract
+                for (const trigger of contractTriggers) {
+                    trigger.lastPolledLedger = endLedger;
+                    await trigger.save();
+                }
 
                 if (foundEvents > 0) {
-                    logger.info(`Collected events for trigger`, {
-                        triggerId: trigger._id,
+                    logger.info(`Processed events for contract`, {
+                        contractId,
                         foundEvents,
                         failedActions,
                     });
                 }
 
-            } catch (triggerError) {
-                logger.error(`Error processing trigger ${trigger._id}:`, { triggerError: triggerError.message });
-                // On failure, we skip updating lastPolledLedger so it will retry on the next interval
+            } catch (contractError) {
+                logger.error(`Error processing contract ${contractId}:`, { error: contractError.message });
             }
 
-            // Small delay between triggers to spread RPC load
             await sleep(INTER_TRIGGER_DELAY_MS);
         }
 
         logger.info('Event polling cycle completed', {
             processedTriggers: triggers.length
         });
-        takeHeapSnapshot('poll-end');
     } catch (error) {
         logger.error('Error in event poller', {
             error: error.message,
